@@ -28,13 +28,13 @@ jobs:
           docker image ls nas-anomaly-sentinel
       - name: Smoke test (dashboard answers)
         run: |
-          docker run -d --name s -e WATCH_PATHS=demo=/tmp nas-anomaly-sentinel:ci
+          docker run -d --name sentinel-ci -e WATCH_PATHS=demo=/tmp nas-anomaly-sentinel:ci
           for i in $(seq 1 30); do
-            if docker exec s python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/status', timeout=2)"; then
+            if docker exec sentinel-ci python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/status', timeout=2)"; then
               echo "Dashboard is up"; exit 0
             fi
             sleep 1
           done
           docker ps -a
-          docker logs s
+          docker logs sentinel-ci
           exit 1
