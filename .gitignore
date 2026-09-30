@@ -1,0 +1,11 @@
+.env
+data/
+demo-data/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+*.db-*
+# local, machine-specific settings (share names, passwords)
+docker-compose.override.yml
+zabbix-db/
