@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NAS Anomaly Sentinel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #E6EBEF; --panel: #F6F8F9; --ink: #16202A; --muted: #56636F; --line: #CBD3DA;
+    --accent: #2B5C8A; --ok: #2F7A55; --warn: #B7791F; --crit: #A4262C;
+    --band: rgba(43, 92, 138, .20);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151B21; --panel: #1D252D; --ink: #E3E9EE; --muted: #97A4AF; --line: #2E3A45;
+            --accent: #7FB0DC; --ok: #5FBF8D; --warn: #E0A948; --crit: #E06A6F; --band: rgba(127,176,220,.30); }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.5 "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+
+  /* The one bold element: a status strip whose whole colour is the state. */
+  .status { border-left: 10px solid var(--state, var(--ok)); background: var(--panel);
+            padding: 22px 26px; display: grid; grid-template-columns: 1fr auto; gap: 8px 24px; align-items: center; }
+  .status h1 { margin: 0; font-size: clamp(1.4rem, 3vw, 2rem); line-height: 1.2; }
+  .status p { margin: 0; color: var(--muted); }
+  .score { text-align: right; }
+  .score b { display: block; font-size: 2.6rem; line-height: 1; color: var(--state, var(--ok)); }
+  .score span { color: var(--muted); font-size: .9rem; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; margin: 28px 0 12px; align-items: end; }
+  label { display: grid; gap: 4px; font-size: .9rem; color: var(--muted); }
+  select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+           padding: 8px 10px; min-width: 180px; }
+  select:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+
+  .chart { background: var(--panel); padding: 16px; height: 360px; }
+  .legend { color: var(--muted); font-size: .9rem; margin: 8px 0 0; }
+
+  h2 { font-size: 1.2rem; margin: 36px 0 8px; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 700; color: var(--muted); font-size: .9rem; }
+  td.sev { font-weight: 700; white-space: nowrap; }
+  .sev-1 { color: var(--warn); } .sev-2 { color: var(--crit); }
+  details { color: var(--muted); font-size: .9rem; }
+  .empty { padding: 18px 14px; color: var(--muted); background: var(--panel); }
+  @media (max-width: 640px) { .status { grid-template-columns: 1fr; } .score { text-align: left; } }
+</style>
+</head>
+<body>
+<main>
+  <section class="status" id="status" aria-live="polite">
+    <div>
+      <h1 id="headline">Veriler yükleniyor…</h1>
+      <p id="sub"></p>
+    </div>
+    <div class="score"><b id="score">–</b><span id="scoreLabel">risk skoru</span></div>
+  </section>
+
+  <div class="controls">
+    <label>Kaynak <select id="source"></select></label>
+    <label>Metrik <select id="metric"></select></label>
+    <label>Aralık
+      <select id="days"><option value="1">Son 24 saat</option><option value="7" selected>Son 7 gün</option><option value="30">Son 30 gün</option></select>
+    </label>
+  </div>
+  <div class="chart"><canvas id="c" aria-label="Metrik grafiği"></canvas></div>
+  <p class="legend" id="legend">Mavi bant: son 30 günde aynı saatteki olağan aralık (%10–%90). Çizgi: gerçek değer.</p>
+
+  <h2 id="alertsTitle">Alarm geçmişi</h2>
+  <div id="alerts"></div>
+</main>
+
+<script src="/static/chart.umd.js"></script>
+<script>
+const LABELS = {
+  written_mb_per_h: "Yazılan MB/saat", created_per_h: "Yeni dosya/saat", modified_per_h: "Değişen dosya/saat",
+  deleted_per_h: "Silinen dosya/saat", growth_mb_per_h: "Büyüme MB/saat", total_gb: "Toplam boyut (GB)",
+  file_count: "Dosya sayısı", ext_changed: "Uzantı değişimi", ransom_ext: "Fidye uzantısı",
+  ransom_notes: "Fidye notu", magic_mismatch: "Magic byte uyuşmazlığı", high_entropy: "Yüksek entropi",
+  high_entropy_ratio: "Yüksek entropi oranı", cpu_pct: "CPU %", mem_mb: "Bellek MB",
+  blk_write_mb_per_h: "Disk yazma MB/saat", net_tx_mb_per_h: "Ağ çıkışı MB/saat"
+};
+const HEAD = ["Her şey olağan seyrinde.", "Olağan dışı bir artış var, kontrol edin.", "Fidye yazılımı belirtisi olabilir. Hemen müdahale edin."];
+const SEV = ["Normal", "Uyarı", "Kritik"];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const $ = id => document.getElementById(id);
+const fmtTime = ts => new Date(ts * 1000).toLocaleString("tr-TR", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"});
+let chart, sources = {};
+
+async function j(url) { const r = await fetch(url); if (!r.ok) throw new Error(url); return r.json(); }
+
+async function loadStatus() {
+  const s = await j("/api/status");
+  const state = ["--ok", "--warn", "--crit"][s.status] || "--ok";
+  $("status").style.setProperty("--state", css(state));
+  $("headline").textContent = HEAD[s.status];
+  $("sub").textContent = s.last_scan ? `Son tarama ${fmtTime(s.last_scan)}. ${s.summary}` : "İlk tarama bekleniyor.";
+  $("score").textContent = Math.round(s.score);
+}
+
+async function loadSources() {
+  sources = await j("/api/sources");
+  const names = Object.keys(sources).sort((a, b) => a.startsWith("ctr:") - b.startsWith("ctr:") || a.localeCompare(b));
+  const first = names.includes("demo") ? "demo" : names[0];
+  $("source").innerHTML = names.map(n => `<option ${n === first ? "selected" : ""}>${n}</option>`).join("");
+  if (!names.length) { $("legend").textContent = "Henüz veri yok. İlk iki tarama tamamlanınca grafik görünecek."; return; }
+  fillMetrics();
+}
+
+function fillMetrics() {
+  const list = sources[$("source").value] || [];
+  const prefer = ["written_mb_per_h", "blk_write_mb_per_h"].find(m => list.includes(m)) || list[0];
+  $("metric").innerHTML = list.map(m => `<option value="${m}" ${m === prefer ? "selected" : ""}>${LABELS[m] || m}</option>`).join("");
+  loadChart();
+}
+
+async function loadChart() {
+  const source = $("source").value, metric = $("metric").value, days = $("days").value;
+  if (!source || !metric) return;
+  const d = await j(`/api/series?source=${encodeURIComponent(source)}&metric=${metric}&days=${days}`);
+  const xs = d.points.map(p => p[0] * 1000);
+  const band = k => xs.map((x, i) => ({x, y: d.band[i][k]}));
+  const data = {
+    datasets: [
+      {label: "p10", data: band(0), borderWidth: 0, pointRadius: 0, fill: false},
+      {label: "Olağan aralık", data: band(1), borderWidth: 0, pointRadius: 0, backgroundColor: css("--band"), fill: "-1"},
+      {label: LABELS[metric] || metric, data: d.points.map(p => ({x: p[0] * 1000, y: p[1]})),
+       borderColor: css("--accent"), borderWidth: 1.6, pointRadius: 0, tension: .15}
+    ]
+  };
+  const opts = {
+    responsive: true, maintainAspectRatio: false, animation: false, parsing: false, normalized: true,
+    interaction: {mode: "nearest", axis: "x", intersect: false},
+    plugins: {legend: {display: false},
+      tooltip: {filter: i => i.datasetIndex === 2, callbacks: {title: i => fmtTime(i[0].parsed.x / 1000)}}},
+    scales: {
+      x: {type: "linear", min: xs[0], max: xs[xs.length - 1], ticks: {color: css("--muted"), maxTicksLimit: 8, callback: v => fmtTime(v / 1000)}, grid: {color: css("--line")}},
+      y: {beginAtZero: true, ticks: {color: css("--muted")}, grid: {color: css("--line")}}
+    }
+  };
+  if (chart) chart.destroy();
+  chart = new Chart($("c"), {type: "line", data, options: opts});
+}
+
+async function loadAlerts() {
+  const a = await j("/api/alerts");
+  if (!a.length) { $("alerts").innerHTML = `<div class="empty">Henüz alarm yok. Simülasyonu çalıştırarak sistemi test edebilirsiniz.</div>`; return; }
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+  $("alerts").innerHTML = `<table><thead><tr><th>Zaman</th><th>Seviye</th><th>Özet</th></tr></thead><tbody>` +
+    a.map(r => `<tr><td>${fmtTime(r.ts)}</td><td class="sev sev-${r.severity}">${SEV[r.severity]}</td>
+      <td>${esc(r.summary)}<details><summary>${r.details.length} bulgu</summary>${r.details.map(f => esc(f)).join("<br>")}</details></td></tr>`).join("") +
+    `</tbody></table>`;
+}
+
+$("source").addEventListener("change", fillMetrics);
+$("metric").addEventListener("change", loadChart);
+$("days").addEventListener("change", loadChart);
+async function refresh() { try { await Promise.all([loadStatus(), loadAlerts()]); } catch (e) { $("sub").textContent = "Sentinel servisine ulaşılamıyor."; } }
+loadSources(); refresh();
+setInterval(refresh, 15000);
+setInterval(loadChart, 60000);
+</script>
+</body>
+</html>

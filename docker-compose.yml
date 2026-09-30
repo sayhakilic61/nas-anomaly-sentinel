@@ -1,0 +1,113 @@
+# NAS Anomaly Sentinel
+#
+#   Core only ............ docker compose up -d
+#   + demo (mail, sim) ... docker compose --profile demo up -d
+#   + Zabbix 7.0 ......... docker compose --profile demo --profile zabbix up -d
+
+services:
+  sentinel:
+    build: .
+    image: nas-anomaly-sentinel:latest
+    container_name: nas-sentinel
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DOCKER_HOST: tcp://socket-proxy:2375   # container-only; never put this in .env
+    ports:
+      - "8080:8080"            # dashboard
+    volumes:
+      - ./data:/data           # SQLite history (30+ days)
+      - ./demo-data:/watch/demo:ro
+      # Real shares - ALWAYS read-only (:ro). UGREEN/UGOS paths usually look like /volume1/<share>
+      # - /volume1/Belgeler:/watch/belgeler:ro
+      # - /volume1/Fotograflar:/watch/fotograflar:ro
+    # Hardening: read-only root FS, no privileges, only the capability to READ any file.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    cap_add: [DAC_READ_SEARCH]
+    security_opt: ["no-new-privileges:true"]
+    # Resource guard-rails: even a bug cannot hurt the NAS.
+    init: true                 # tiny init as PID 1, reaps any orphaned process
+    cpus: 0.5                  # at most half a core
+    mem_limit: 512m            # ~1M watched files fit comfortably
+    pids_limit: 64
+    depends_on: [socket-proxy]
+
+  # Read-only gateway to the Docker API: the sentinel can list containers and read
+  # stats, but cannot start, stop or exec anything.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: nas-sentinel-socket-proxy
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    security_opt: ["no-new-privileges:true"]
+    cpus: 0.2
+    mem_limit: 64m
+
+  # ---------------- demo profile -----------------------------------------
+  mailpit:                     # catches alert e-mails -> http://<nas-ip>:8025
+    image: axllent/mailpit:latest
+    container_name: nas-sentinel-mailpit
+    profiles: [demo]
+    restart: unless-stopped
+    ports:
+      - "8025:8025"
+
+  simulator:                   # safe, reversible attack simulator (sandbox only)
+    build: .
+    image: nas-anomaly-sentinel:latest
+    profiles: [demo]
+    entrypoint: ["python", "-m", "simulator.simulate"]
+    command: ["--help"]
+    environment:
+      SANDBOX_DIR: /sandbox
+    volumes:
+      - ./demo-data:/sandbox
+
+  # ---------------- zabbix profile ---------------------------------------
+  zabbix-db:
+    image: postgres:16-alpine
+    container_name: zabbix-db
+    profiles: [zabbix]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-zabbix}
+      POSTGRES_DB: zabbix
+    volumes:
+      - ./zabbix-db:/var/lib/postgresql/data
+
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:alpine-7.0-latest
+    container_name: zabbix-server
+    profiles: [zabbix]
+    restart: unless-stopped
+    environment:
+      DB_SERVER_HOST: zabbix-db
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-zabbix}
+      POSTGRES_DB: zabbix
+    ports:
+      - "10051:10051"
+    depends_on: [zabbix-db]
+
+  zabbix-web:                  # http://<nas-ip>:8081  (Admin / zabbix - change it!)
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.0-latest
+    container_name: zabbix-web
+    profiles: [zabbix]
+    restart: unless-stopped
+    environment:
+      ZBX_SERVER_HOST: zabbix-server
+      DB_SERVER_HOST: zabbix-db
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-zabbix}
+      POSTGRES_DB: zabbix
+      PHP_TZ: Europe/Istanbul
+    ports:
+      - "8081:8080"
+    depends_on: [zabbix-server]

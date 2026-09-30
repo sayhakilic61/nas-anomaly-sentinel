@@ -1,0 +1,81 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: d04cebe3bf4b45519939a29f3b03cf6e
+      name: Templates/Applications
+  templates:
+    - uuid: aee7d3070b0a4f919e1000802317b670
+      template: 'NAS Anomaly Sentinel'
+      name: 'NAS Anomaly Sentinel'
+      description: |
+        Trapper items pushed by nas-anomaly-sentinel (https://github.com/sayhakilic61/nas-anomaly-sentinel).
+        Create a host whose name equals ZABBIX_HOST (default: nas-sentinel) and link this template.
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: cce2670fdf0b465f90d22f345d83eed9
+          name: 'Sentinel status (0=OK 1=Warning 2=Critical)'
+          type: TRAP
+          key: sentinel.status
+          delay: '0'
+          history: 90d
+          valuemap:
+            name: 'Sentinel status'
+          tags:
+            - tag: component
+              value: ransomware
+          triggers:
+            - uuid: 2929a778bd7c4f6b83324a69f8103dd2
+              expression: 'max(/NAS Anomaly Sentinel/sentinel.status,1h)=2'
+              name: 'NAS: possible ransomware / destructive activity'
+              priority: DISASTER
+              description: 'Stays active for 1 hour after the last critical scan. Check the sentinel dashboard and e-mail for details.'
+              manual_close: 'YES'
+              tags:
+                - tag: scope
+                  value: security
+            - uuid: a533cf2284484927a165a5ae36886e5e
+              expression: 'last(/NAS Anomaly Sentinel/sentinel.status)=1'
+              name: 'NAS: unusual storage activity'
+              priority: WARNING
+              dependencies:
+                - name: 'NAS: possible ransomware / destructive activity'
+                  expression: 'max(/NAS Anomaly Sentinel/sentinel.status,1h)=2'
+        - uuid: f0a49df8aad84048b0ceed552e66d860
+          name: 'Sentinel risk score'
+          type: TRAP
+          key: sentinel.score
+          delay: '0'
+          history: 90d
+          value_type: FLOAT
+          units: '%'
+        - uuid: 6ff0b3e6ae05433eacbfbd0e248adca0
+          name: 'Sentinel last message'
+          type: TRAP
+          key: sentinel.message
+          delay: '0'
+          history: 30d
+          value_type: TEXT
+          trends: '0'
+        - uuid: 83e5ec7331ea4244a2c611db55adab2b
+          name: 'Sentinel heartbeat'
+          type: TRAP
+          key: sentinel.heartbeat
+          delay: '0'
+          history: 7d
+          triggers:
+            - uuid: 07341522df91418d8d9c2ec1a4e12ced
+              expression: 'nodata(/NAS Anomaly Sentinel/sentinel.heartbeat,15m)=1'
+              name: 'NAS sentinel is silent for 15 minutes (stopped or killed?)'
+              priority: HIGH
+              description: 'Ransomware often kills monitoring and backup agents first.'
+      valuemaps:
+        - uuid: d2a7f1c14a0b45f296fa46c584f2d45a
+          name: 'Sentinel status'
+          mappings:
+            - value: '0'
+              newvalue: OK
+            - value: '1'
+              newvalue: Warning
+            - value: '2'
+              newvalue: Critical
