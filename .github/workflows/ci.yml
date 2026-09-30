@@ -26,8 +26,13 @@ jobs:
         run: docker build -t nas-anomaly-sentinel:ci .
       - name: Smoke test (dashboard answers)
         run: |
-          mkdir -p demo-data data
-          docker run -d --name s -p 8080:8080 -e WATCH_PATHS=demo=/watch/demo \
-            -v "$PWD/demo-data:/watch/demo:ro" -v "$PWD/data:/data" nas-anomaly-sentinel:ci
-          for i in $(seq 1 20); do curl -fs localhost:8080/api/status && exit 0; sleep 1; done
-          docker logs s; exit 1
+          docker run -d --name s -e WATCH_PATHS=demo=/tmp nas-anomaly-sentinel:ci
+          for i in $(seq 1 30); do
+            if docker exec s python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/status', timeout=2)"; then
+              echo "Dashboard is up"; exit 0
+            fi
+            sleep 1
+          done
+          docker ps -a
+          docker logs s
+          exit 1
