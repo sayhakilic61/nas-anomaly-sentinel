@@ -23,7 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build image
-        run: docker build -t nas-anomaly-sentinel:ci .
+        run: |
+          docker buildx build --load -t nas-anomaly-sentinel:ci .
+          docker image ls nas-anomaly-sentinel
       - name: Smoke test (dashboard answers)
         run: |
           docker run -d --name s -e WATCH_PATHS=demo=/tmp nas-anomaly-sentinel:ci
